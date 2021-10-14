@@ -11,6 +11,123 @@ from models.modules.loss import GANLoss
 
 logger = logging.getLogger('base')
 
+import numpy as np
+import torch.nn.functional as F
+### Quality mesuare ###
+## LPIPS
+import LPIPS.models.dist_model as dm
+model_LPIPS = dm.DistModel()
+model_LPIPS.initialize(model='net-lin',net='alex',use_gpu=True)
+L_FM = 1            # Scaling params for the feature matching loss
+L_LPIPS = 1e-3      # Scaling params for the LPIPS loss
+L_ADV = 1e-3        # Scaling params for the Adv loss
+
+### U-Net Discriminator ###
+# Residual block for the discriminator
+class DBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, which_conv=nn.Conv2d, which_bn=nn.BatchNorm2d, wide=True,
+                preactivation=True, activation=nn.LeakyReLU(0.1, inplace=False), downsample=nn.AvgPool2d(2, stride=2)):
+        super(DBlock, self).__init__()
+        self.in_channels, self.out_channels = in_channels, out_channels
+        # If using wide D (as in SA-GAN and BigGAN), change the channel pattern
+        self.hidden_channels = self.out_channels if wide else self.in_channels
+        self.which_conv, self.which_bn = which_conv, which_bn
+        self.preactivation = preactivation
+        self.activation = activation
+        self.downsample = downsample
+
+        # Conv layers
+        self.conv1 = self.which_conv(self.in_channels, self.hidden_channels, kernel_size=3, padding=1)
+        self.conv2 = self.which_conv(self.hidden_channels, self.out_channels, kernel_size=3, padding=1)
+        self.learnable_sc = True if (in_channels != out_channels) or downsample else False
+        if self.learnable_sc:
+            self.conv_sc = self.which_conv(in_channels, out_channels,
+                                            kernel_size=1, padding=0)
+
+        self.bn1 = self.which_bn(self.hidden_channels)
+        self.bn2 = self.which_bn(out_channels)
+
+    def forward(self, x):
+        if self.preactivation:
+            h = self.activation(x)
+        else:
+            h = x
+        h = self.bn1(self.conv1(h))
+        if self.downsample:
+            h = self.downsample(h)
+
+        return h #+ self.shortcut(x)
+
+
+class GBlock(nn.Module):
+    def __init__(self, in_channels, out_channels,
+                which_conv=nn.Conv2d, which_bn=nn.BatchNorm2d, activation=nn.LeakyReLU(0.1, inplace=False),
+                upsample=nn.Upsample(scale_factor=2, mode='nearest')):
+        super(GBlock, self).__init__()
+
+        self.in_channels, self.out_channels = in_channels, out_channels
+        self.which_conv, self.which_bn = which_conv, which_bn
+        self.activation = activation
+        self.upsample = upsample
+        # Conv layers
+        self.conv1 = self.which_conv(self.in_channels, self.out_channels, kernel_size=3, padding=1)
+        self.conv2 = self.which_conv(self.out_channels, self.out_channels, kernel_size=3, padding=1)
+        self.learnable_sc = in_channels != out_channels or upsample
+        if self.learnable_sc:
+            self.conv_sc = self.which_conv(in_channels, out_channels,
+                                            kernel_size=1, padding=0)
+        # Batchnorm layers
+        self.bn1 = self.which_bn(out_channels)
+        self.bn2 = self.which_bn(out_channels)
+        # upsample layers
+        self.upsample = upsample
+
+    def forward(self, x):
+        h = self.activation(x)
+        if self.upsample:
+            h = self.upsample(h)
+        h = self.bn1(self.conv1(h))
+        return h
+
+
+class UnetD(torch.nn.Module):
+    def __init__(self):
+        super(UnetD, self).__init__()
+
+        self.enc_b1 = DBlock(3, 64, preactivation=False)
+        self.enc_b2 = DBlock(64, 128)
+
+        self.enc_out = nn.Conv2d(128, 1, kernel_size=1, padding=0)
+
+        self.dec_b1 = GBlock(128, 64)
+        self.dec_b2 = GBlock(64*2, 32)
+
+        self.dec_out = nn.Conv2d(32, 1, kernel_size=1, padding=0)
+
+        # Init weights
+        for m in self.modules():
+            classname = m.__class__.__name__
+            if classname.lower().find('conv') != -1:
+                # print(classname)
+                nn.init.kaiming_normal(m.weight)
+                nn.init.constant(m.bias, 0)
+            elif classname.find('bn') != -1:
+                m.weight.data.normal_(1.0, 0.02)
+                m.bias.data.fill_(0)
+
+    def forward(self, x):
+        e1 = self.enc_b1(x)
+        e2 = self.enc_b2(e1)
+
+        e_out = self.enc_out(F.leaky_relu(e2, 0.1))
+
+        d1 = self.dec_b1(e2)
+        d2 = self.dec_b2(torch.cat([d1, e1], 1))
+
+        d_out = self.dec_out(F.leaky_relu(d2, 0.1))
+
+        return e_out, d_out, [e1,e2], [d1,d2]
+
 class SRGANModel(BaseModel):
     def __init__(self, opt):
         super(SRGANModel, self).__init__(opt)
@@ -27,15 +144,17 @@ class SRGANModel(BaseModel):
         else:
             self.netG = DataParallel(self.netG)
         if self.is_train:
-            self.netD = networks.define_D(opt).to(self.device)
-            if opt['dist']:
-                self.netD = DistributedDataParallel(self.netD,
-                                                    device_ids=[torch.cuda.current_device()])
-            else:
-                self.netD = DataParallel(self.netD)
+            # self.netD = networks.define_D(opt).to(self.device)
+            # if opt['dist']:
+            #     self.netD = DistributedDataParallel(self.netD,
+            #                                         device_ids=[torch.cuda.current_device()])
+            # else:
+            #     self.netD = DataParallel(self.netD)
 
+            self.model_D = UnetD().cuda()
             self.netG.train()
-            self.netD.train()
+            # self.netD.train()
+            self.model_D.train()
 
         # define losses, optimizer and scheduler
         if self.is_train:
@@ -82,6 +201,8 @@ class SRGANModel(BaseModel):
             self.D_update_ratio = train_opt['D_update_ratio'] if train_opt['D_update_ratio'] else 1
             self.D_init_iters = train_opt['D_init_iters'] if train_opt['D_init_iters'] else 0
 
+
+
             # optimizers
             # G
             wd_G = train_opt['weight_decay_G'] if train_opt['weight_decay_G'] else 0
@@ -98,10 +219,17 @@ class SRGANModel(BaseModel):
             self.optimizers.append(self.optimizer_G)
             # D
             wd_D = train_opt['weight_decay_D'] if train_opt['weight_decay_D'] else 0
-            self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=train_opt['lr_D'],
+
+            # self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=train_opt['lr_D'],
+            #                                     weight_decay=wd_D,
+            #                                     betas=(train_opt['beta1_D'], train_opt['beta2_D']))
+            # self.optimizers.append(self.optimizer_D)
+
+            self.model_optimizer_D = torch.optim.Adam(self.model_D.parameters(), lr=train_opt['lr_D'],
                                                 weight_decay=wd_D,
                                                 betas=(train_opt['beta1_D'], train_opt['beta2_D']))
-            self.optimizers.append(self.optimizer_D)
+
+            self.optimizers.append(self.model_optimizer_D)
 
             # schedulers
             if train_opt['lr_scheme'] == 'MultiStepLR':
@@ -134,8 +262,47 @@ class SRGANModel(BaseModel):
             self.var_ref = input_ref.to(self.device)
 
     def optimize_parameters(self, step):
+
+        def rand_bbox(size, lam):
+            W = size[2]
+            H = size[3]
+            cut_rat = np.sqrt(1. - lam)
+            cut_w = np.int(W * cut_rat)
+            cut_h = np.int(H * cut_rat)
+
+            # uniform
+            cx = np.random.randint(W)
+            cy = np.random.randint(H)
+
+            bbx1 = np.clip(cx - cut_w // 2, 0, W)
+            bby1 = np.clip(cy - cut_h // 2, 0, H)
+            bbx2 = np.clip(cx + cut_w // 2, 0, W)
+            bby2 = np.clip(cy + cut_h // 2, 0, H)
+
+            return bbx1, bby1, bbx2, bby2
+
+        def Huber(input, target, delta=0.01, reduce=True):
+            abs_error = torch.abs(input - target)
+            quadratic = torch.clamp(abs_error, max=delta)
+
+            # The following expression is the same in value as
+            # tf.maximum(abs_error - delta, 0), but importantly the gradient for the
+            # expression when abs_error == delta is 0 (for tf.maximum it would be 1).
+            # This is necessary to avoid doubling the gradient, since there is already a
+            # nonzero contribution to the gradient from the quadratic term.
+            linear = (abs_error - quadratic)
+            losses = 0.5 * torch.pow(quadratic, 2) + delta * linear
+
+            if reduce:
+                return torch.mean(losses)
+            else:
+                return losses
+
         # G
-        for p in self.netD.parameters():
+        # for p in self.netD.parameters():
+        #     p.requires_grad = False
+
+        for p in self.model_D.parameters():
             p.requires_grad = False
 
         self.optimizer_G.zero_grad()
@@ -146,58 +313,136 @@ class SRGANModel(BaseModel):
             if self.cri_pix:  # pixel loss
                 l_g_pix = self.l_pix_w * self.cri_pix(self.fake_H, self.var_H)
                 l_g_total += l_g_pix
+
             if self.cri_fea:  # feature loss
                 real_fea = self.netF(self.var_H).detach()
                 fake_fea = self.netF(self.fake_H)
                 l_g_fea = self.l_fea_w * self.cri_fea(fake_fea, real_fea)
                 l_g_total += l_g_fea
 
-            pred_g_fake = self.netD(self.fake_H)
-            if self.opt['train']['gan_type'] == 'gan':
-                l_g_gan = self.l_gan_w * self.cri_gan(pred_g_fake, True)
-            elif self.opt['train']['gan_type'] == 'ragan':
-                pred_d_real = self.netD(self.var_ref).detach()
-                l_g_gan = self.l_gan_w * (
-                    self.cri_gan(pred_d_real - torch.mean(pred_g_fake), False) +
-                    self.cri_gan(pred_g_fake - torch.mean(pred_d_real), True)) / 2
-            l_g_total += l_g_gan
+            # pred_g_fake = self.netD(self.fake_H)
+            # if self.opt['train']['gan_type'] == 'gan':
+            #     l_g_gan = self.l_gan_w * self.cri_gan(pred_g_fake, True)
+            # elif self.opt['train']['gan_type'] == 'ragan':
+            #     pred_d_real = self.netD(self.var_ref).detach()
+            #     l_g_gan = self.l_gan_w * (
+            #         self.cri_gan(pred_d_real - torch.mean(pred_g_fake), False) +
+            #         self.cri_gan(pred_g_fake - torch.mean(pred_d_real), True)) / 2
+            # l_g_total += l_g_gan
+
+            # LPIPS loss
+            loss_LPIPS, _ = model_LPIPS.forward_pair(self.var_ref*2-1, self.fake_H.detach()*2-1)
+            loss_LPIPS = torch.mean(loss_LPIPS) * L_LPIPS
+
+            # FM and GAN losses
+            e_S, d_S, e_Ss, d_Ss = self.model_D( self.fake_H.detach() )
+            _, _, e_Hs, d_Hs = self.model_D( self.var_ref )
+
+            # FM loss
+            loss_FMs = []
+            for f in range(2):
+                loss_FMs += [Huber(e_Ss[f], e_Hs[f])]
+                loss_FMs += [Huber(d_Ss[f], d_Hs[f])]
+            loss_FM = torch.mean(torch.stack(loss_FMs)) * L_FM
+
+            # GAN loss
+            loss_Advs = []
+            loss_Advs += [torch.nn.ReLU()(1.0 - e_S).mean() * L_ADV]
+            loss_Advs += [torch.nn.ReLU()(1.0 - d_S).mean() * L_ADV]
+            loss_Adv = torch.mean(torch.stack(loss_Advs))
+
+            l_g_total += loss_LPIPS + loss_FM + loss_Adv
 
             l_g_total.backward()
             self.optimizer_G.step()
 
         # D
-        for p in self.netD.parameters():
+        # for p in self.netD.parameters():
+        #     p.requires_grad = True
+
+        # self.optimizer_D.zero_grad()
+        # l_d_total = 0
+        # pred_d_real = self.netD(self.var_ref)
+        # pred_d_fake = self.netD(self.fake_H.detach())  # detach to avoid BP to G
+        # if self.opt['train']['gan_type'] == 'gan':
+        #     l_d_real = self.cri_gan(pred_d_real, True)
+        #     l_d_fake = self.cri_gan(pred_d_fake, False)
+        #     l_d_total = l_d_real + l_d_fake
+        # elif self.opt['train']['gan_type'] == 'ragan':
+        #     l_d_real = self.cri_gan(pred_d_real - torch.mean(pred_d_fake), True)
+        #     l_d_fake = self.cri_gan(pred_d_fake - torch.mean(pred_d_real), False)
+        #     l_d_total = (l_d_real + l_d_fake) / 2
+
+        # l_d_total.backward()
+        # self.optimizer_D.step()
+
+        # D
+
+        for p in self.model_D.parameters():
             p.requires_grad = True
 
-        self.optimizer_D.zero_grad()
-        l_d_total = 0
-        pred_d_real = self.netD(self.var_ref)
-        pred_d_fake = self.netD(self.fake_H.detach())  # detach to avoid BP to G
-        if self.opt['train']['gan_type'] == 'gan':
-            l_d_real = self.cri_gan(pred_d_real, True)
-            l_d_fake = self.cri_gan(pred_d_fake, False)
-            l_d_total = l_d_real + l_d_fake
-        elif self.opt['train']['gan_type'] == 'ragan':
-            l_d_real = self.cri_gan(pred_d_real - torch.mean(pred_d_fake), True)
-            l_d_fake = self.cri_gan(pred_d_fake - torch.mean(pred_d_real), False)
-            l_d_total = (l_d_real + l_d_fake) / 2
+        self.model_optimizer_D.zero_grad()
 
-        l_d_total.backward()
-        self.optimizer_D.step()
+        e_S, d_S, _, _ = self.model_D( self.fake_H.detach() )
+        e_H, d_H, _, _ = self.model_D( self.var_ref )
 
-        # set log
+        # D Loss, for encoder end and decoder end
+        loss_D_Enc_S = torch.nn.ReLU()(1.0 + e_S).mean()
+        loss_D_Enc_H = torch.nn.ReLU()(1.0 - e_H).mean()
+
+        loss_D_Dec_S = torch.nn.ReLU()(1.0 + d_S).mean()
+        loss_D_Dec_H = torch.nn.ReLU()(1.0 - d_H).mean()
+
+        loss_D = loss_D_Enc_H + loss_D_Dec_H
+
+        # CutMix for consistency loss
+        batch_S_CutMix = self.fake_H.detach().clone()
+
+        # probability of doing cutmix
+        p_mix = step / 40000
+        if p_mix > 0.5:
+            p_mix = 0.5
+
+        if torch.rand(1) <= p_mix:
+            r_mix = torch.rand(1)   # real/fake ratio
+
+            bbx1, bby1, bbx2, bby2 = rand_bbox(batch_S_CutMix.size(), r_mix)
+            batch_S_CutMix[:, :, bbx1:bbx2, bby1:bby2] = self.var_ref[:, :, bbx1:bbx2, bby1:bby2]
+            # adjust lambda to exactly match pixel ratio
+            r_mix = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (batch_S_CutMix.size()[-1] * batch_S_CutMix.size()[-2]))
+
+            e_mix, d_mix, _, _ = self.model_D( batch_S_CutMix )
+
+            loss_D_Enc_S = torch.nn.ReLU()(1.0 + e_mix).mean()
+            loss_D_Dec_S = torch.nn.ReLU()(1.0 + d_mix).mean()
+
+            d_S[:,:,bbx1:bbx2, bby1:bby2] = d_H[:,:,bbx1:bbx2, bby1:bby2]
+            loss_D_Cons = F.mse_loss(d_mix, d_S)
+
+            loss_D += loss_D_Cons
+            self.log_dict['loss_D_Cons'] = torch.mean(loss_D_Cons).item()
+
+        loss_D += loss_D_Enc_S + loss_D_Dec_S
+        loss_D.backward()
+        self.model_optimizer_D.step()
+
+        #set log
         if step % self.D_update_ratio == 0 and step > self.D_init_iters:
             if self.cri_pix:
                 self.log_dict['l_g_pix'] = l_g_pix.item()
                 # self.log_dict['l_g_mean_color'] = l_g_mean_color.item()
             if self.cri_fea:
                 self.log_dict['l_g_fea'] = l_g_fea.item()
-            self.log_dict['l_g_gan'] = l_g_gan.item()
+            self.log_dict['loss_Adv'] = loss_Adv.item()
+            self.log_dict['loss_LPIPS'] = loss_LPIPS.item()
+            self.log_dict['loss_FM'] = loss_FM.item()
 
-        self.log_dict['l_d_real'] = l_d_real.item()
-        self.log_dict['l_d_fake'] = l_d_fake.item()
-        self.log_dict['D_real'] = torch.mean(pred_d_real.detach())
-        self.log_dict['D_fake'] = torch.mean(pred_d_fake.detach())
+        # for monitoring
+        self.log_dict['loss_D'] = loss_D.item()
+        self.log_dict['e_H'] = torch.mean(e_H).item()
+        self.log_dict['e_S'] = torch.mean(e_S).item()
+        self.log_dict['d_H'] = torch.mean(d_H).item()
+        self.log_dict['d_S'] = torch.mean(d_S).item()
 
     def test(self):
         self.netG.eval()
@@ -320,13 +565,13 @@ class SRGANModel(BaseModel):
             logger.info(s)
         if self.is_train:
             # Discriminator
-            s, n = self.get_network_description(self.netD)
-            if isinstance(self.netD, nn.DataParallel) or isinstance(self.netD,
+            s, n = self.get_network_description(self.model_D)
+            if isinstance(self.model_D, nn.DataParallel) or isinstance(self.model_D,
                                                                     DistributedDataParallel):
-                net_struc_str = '{} - {}'.format(self.netD.__class__.__name__,
-                                                 self.netD.module.__class__.__name__)
+                net_struc_str = '{} - {}'.format(self.model_D.__class__.__name__,
+                                                 self.model_D.module.__class__.__name__)
             else:
-                net_struc_str = '{}'.format(self.netD.__class__.__name__)
+                net_struc_str = '{}'.format(self.model_D.__class__.__name__)
             if self.rank <= 0:
                 logger.info('Network D structure: {}, with parameters: {:,d}'.format(
                     net_struc_str, n))
@@ -353,8 +598,8 @@ class SRGANModel(BaseModel):
         load_path_D = self.opt['path']['pretrain_model_D']
         if self.opt['is_train'] and load_path_D is not None:
             logger.info('Loading model for D [{:s}] ...'.format(load_path_D))
-            self.load_network(load_path_D, self.netD, self.opt['path']['strict_load'])
+            self.load_network(load_path_D, self.model_D, self.opt['path']['strict_load'])
 
     def save(self, iter_step):
         self.save_network(self.netG, 'G', iter_step)
-        self.save_network(self.netD, 'D', iter_step)
+        self.save_network(self.model_D, 'D', iter_step)
