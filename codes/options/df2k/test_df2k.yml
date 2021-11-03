@@ -1,4 +1,4 @@
-name: Track1
+name: Track1-Unet
 suffix: ~  # add suffix to saved images
 model: srgan
 distortion: sr
@@ -10,7 +10,7 @@ datasets:
   test_1:  # the 1st test dataset
     name: DIV2K
     mode: LR
-    dataroot_LR: ../../ntire20/Corrupted-te-x
+    dataroot_LR: /home/kvargas/kian/datasets/real-sr/Corrupted-te-x
 
 #### network structures
 network_G:
@@ -23,5 +23,6 @@ network_G:
 
 #### path
 path:
-  pretrain_model_G: ../pretrained_model/DF2K.pth
+  # pretrain_model_G: /home/kvargas/kian/code/pytorch_cnn/super_resolution/Real-SR/pretrained-model/DF2K.pth
+  pretrain_model_G: /home/kvargas/kian/code/pytorch_cnn/super_resolution/Real-SR/experiments/Corrupted_noise_unet_1/models/latest_G.pth
   results_root: ./results/

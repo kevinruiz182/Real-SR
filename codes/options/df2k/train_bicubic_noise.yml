@@ -1,5 +1,5 @@
 #### general settings
-name: Corrupted_noise
+name: Corrupted_noise-U-net-full
 use_tb_logger: true
 model: srgan
 distortion: sr
@@ -12,9 +12,9 @@ datasets:
     name: train
     mode: LQGT
     aug: noise
-    noise_data: ../datasets/DF2K/Corrupted_noise/
-    dataroot_GT: ../datasets/DF2K/generated/tdsr/HR
-    dataroot_LQ: ../datasets/DF2K/generated/tdsr/LR
+    noise_data: /home/kvargas/kian/code/pytorch_cnn/Real-SR/datasets/DF2K/Corrupted_noise
+    dataroot_GT: /home/kvargas/kian/code/pytorch_cnn/Real-SR/datasets/DF2K/generated/tdsr/HR
+    dataroot_LQ: /home/kvargas/kian/code/pytorch_cnn/Real-SR/datasets/DF2K/generated/tdsr/LR
     use_shuffle: true
     n_workers: 6  # per GPU
     batch_size: 16
@@ -42,7 +42,7 @@ network_D:
 
 #### path
 path:
-  pretrain_model_G: ../pretrained_model/RRDB_PSNR_x4.pth
+  pretrain_model_G: None
   strict_load: true
   resume_state: ~
 
