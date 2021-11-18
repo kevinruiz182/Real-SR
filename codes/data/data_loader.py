@@ -14,7 +14,10 @@ class noiseDataset(data.Dataset):
         assert os.path.exists(base)
 
         # self.mat_files = sorted(glob.glob(base + '*.mat'))
-        self.noise_imgs = sorted(glob.glob(base + '*.png'))
+        self.noise_imgs = [os.path.join(root,name)
+             for root, dirs, files in os.walk(base)
+             for name in files
+             if name.endswith(('png'))]
         self.pre_process = transforms.Compose([transforms.RandomCrop(size),
                                                transforms.ToTensor()])
 
