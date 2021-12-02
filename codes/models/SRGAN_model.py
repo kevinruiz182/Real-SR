@@ -373,7 +373,7 @@ class SRGANModel(BaseModel):
         batch_S_CutMix = self.fake_H.detach().clone()
 
         # probability of doing cutmix
-        p_mix = step / 100000
+        p_mix = step / 40000
         if p_mix > 0.5:
             p_mix = 0.5
 

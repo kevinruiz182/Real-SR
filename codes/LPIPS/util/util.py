@@ -9,7 +9,8 @@ import os
 import collections
 import matplotlib.pyplot as plt
 from scipy.ndimage.interpolation import zoom
-from skimage.measure import compare_ssim
+#from skimage.measure import compare_ssim
+from skimage import measure
 import torch
 from IPython import embed
 import cv2
@@ -49,7 +50,7 @@ def psnr(p0, p1, peak=255.):
 
 def dssim(p0, p1, range=255.):
     # embed()
-    return (1 - compare_ssim(p0, p1, data_range=range, multichannel=True)) / 2.
+    return (1 - measure.compare_ssim(p0, p1, data_range=range, multichannel=True)) / 2.
 
 def rgb2lab(in_img,mean_cent=False):
     from skimage import color
