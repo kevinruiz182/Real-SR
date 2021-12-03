@@ -23,5 +23,5 @@ network_G:
 
 #### path
 path:
-  pretrain_model_G: /workspace/experiments/UNET_before_docker-Training/models/latest_G.pth
+  pretrain_model_G: /workspace/experiments/sr-docker-training/models/latest_G.pth
   results_root: ./results/
