@@ -21,7 +21,7 @@ opt = parser.parse_args()
 
 # define input and target directories
 with open('./preprocess/paths.yml', 'r') as stream:
-    PATHS = yaml.load(stream)
+    PATHS = yaml.safe_load(stream)
 
 if opt.dataset == 'df2k':
     path_sdsr = PATHS['datasets']['df2k'] + '/generated/sdsr/'

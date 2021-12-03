@@ -1,7 +1,7 @@
 df2k:
   tdsr:
-    source: '../../ntire20/Corrupted-tr-x'
-    target: '../../ntire20/Corrupted-tr-y'
+    source: '/root/.datasets/ntire20/Image_Processing_Artifacts/track1-train-source'
+    target: '/root/.datasets/ntire20/Image_Processing_Artifacts/train-target'
     valid:
 dped:
   clean:

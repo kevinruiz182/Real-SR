@@ -1,4 +1,4 @@
-name: Track1
+name: sr-docker-test
 suffix: ~  # add suffix to saved images
 model: srgan
 distortion: sr
@@ -10,7 +10,7 @@ datasets:
   test_1:  # the 1st test dataset
     name: DIV2K
     mode: LR
-    dataroot_LR: ../../ntire20/Corrupted-te-x
+    dataroot_LR: /root/.datasets/ntire20/Image_Processing_Artifacts/track1-valid-input
 
 #### network structures
 network_G:
@@ -23,5 +23,5 @@ network_G:
 
 #### path
 path:
-  pretrain_model_G: ../pretrained_model/DF2K.pth
+  pretrain_model_G: /workspace/experiments/UNET_before_docker-Training/models/latest_G.pth
   results_root: ./results/

@@ -7,7 +7,7 @@ docker run -ti \
 --privileged=true \
 --cap-add=CAP_SYS_ADMIN \
 --ipc=host \
--v /datasets/.datasets:/root/.datasets \
+-v /home/kvargas/kian/datasets:/root/.datasets \
 -v $WS_DIR_PATH:/workspace/rsr \
 -p 8080:8080 \
 --name rsr-run rsr:latest \

@@ -11,11 +11,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     byobu \
     vim \
-    nano 
-    
+    nano
+
 WORKDIR /workspace/rsr
 
 # RUN chmod -R a+w .
 COPY requirements.txt /workspace/rsr
-RUN pip install -r requirements.txt
+RUN pip install -r requirements.txt --ignore-installed
 
